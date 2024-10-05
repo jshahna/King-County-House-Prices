@@ -1,0 +1,465 @@
+---
+title: "Final Group Project"
+authors: "Charry DeAndres - Kaniz Syeda - Shahnaz Jalali"
+date: "11/17/2020"
+dataset: "kc_house_data.csv"
+output: html_document
+---
+
+# Setup libraries and Read King County housing dataset
+```{r,warning=FALSE,message=FALSE}
+#install.packages("leaflet", dependencies = TRUE)
+
+# load required libraries
+install.packages("tidyverse")
+install.packages("GGally")
+install.packages("caret", dependencies = c("Depends", "Suggests"))
+install.packages("lattice")
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(caret) 
+library(corrplot)
+library(stringr)
+library(lubridate)
+library(leaflet)
+
+set.seed(1234)
+
+
+# set working directory
+setwd("C:/Users/Admin/Desktop/DATA")
+
+# load king county housing dataset
+houses = read.delim(file = "kc_house_data.csv", header = TRUE, sep = ",")
+
+# get summary report
+summary(houses)
+```
+
+# check for Missing Data
+```{r,warning=FALSE,message=FALSE}
+# display number of rows and first 6 rows of data
+nrow(houses)
+head(houses)
+
+# check missing values: there was no NAs in the dataset
+nrow(houses %>% na.omit()) == nrow(houses)
+colSums(is.na(houses))
+```
+
+# Exploratory Data Analysis
+
+```{r,warning=FALSE,message=FALSE}
+# price distribution was skewed so we apply log() function
+houses$log_price = log10(houses$price)
+
+# Distribution of Price 
+ggplot(houses, aes(x = price)) + 
+  geom_density(fill = "blue") + 
+  geom_histogram(binwidth = 1, fill = "blue") +
+  ggtitle("Distribution of Price")
+
+# Distribution of Log_Price
+ggplot(houses, aes(x = log_price)) + 
+  geom_density(fill = "blue") + 
+  geom_histogram(binwidth = .10, fill = "blue") +
+  ggtitle("Distribution of Log_Price")
+
+# price per sqft living
+houses$price_per_sqft_living = houses$price/houses$sqft_living
+```
+
+# Visualize the distribution of selected features
+```{r, message=FALSE,warning=FALSE}
+features <- c('bathrooms', 'sqft_living', 'sqft_above', 'sqft_lot', 'floors', 
+              'sqft_basement', 'sqft_living15', 'zipcode','condition', 'grade')
+
+for (i in (features)){
+                        p <- ggplot(houses, aes_string(x = i)) +
+                             geom_histogram() +
+                             labs(title = str_c("Dustribution of ", i))
+                      print(p)
+                     }
+
+# Distribution of yr_renovated 
+houses %>% filter( yr_renovated != 0 ) %>%  
+  ggplot(aes(x = yr_renovated)) + 
+  geom_histogram(stat = "count") +
+  ggtitle("Distribution of Year_Renovated")
+
+# Distribution of yr_built
+ggplot(houses, aes(x = yr_built)) + 
+  geom_histogram(stat = "count") +
+  ggtitle("Distribution of Year_Built")
+``` 
+
+# Features with correlation value of equal or greater than 40% 
+```{r,warning=FALSE,message=FALSE}
+# features with correlation value of equal or greater than 40% 
+data_filtered = select(houses, -id, -lat, -long, -date, -zipcode, 
+                       -yr_renovated, -price_per_sqft_living, -price )
+
+column_names = colnames(data_filtered)
+
+good_cor = function(name) {
+                            cor_value = cor(data_filtered$log_price, data_filtered[name])
+                            return(cor_value >= .40)
+}
+
+column_name_cor = Filter(good_cor, column_names)
+data_filtered = select(data_filtered, column_name_cor)
+
+# Plot filtered features with 40% or higher correlation to price
+ggpairs(data_filtered) +
+  ggtitle("Correlation of the features with 40% or higher correlation to log_price")
+```
+
+# House Price distribution comparing "with or without"" Waterfront, View, Basement or Renovation
+```{r, message=FALSE,warning=FALSE}
+# House price distribution comparing with or without "waterfront"
+houses$waterfront = factor(houses$waterfront)
+ggpairs(select(houses, log_price, waterfront), mapping = aes(color = waterfront, alpha = 0.5)) +
+  ggtitle("House Price distribution comparing with or without waterfront")
+
+# House Price distribution comparing with or without "view"
+houses$has_view = ifelse(houses$view > 0, 1, 0)
+houses$has_view = factor(houses$has_view)
+ggpairs(select(houses, log_price, has_view), mapping = aes(color = has_view, alpha = 0.5)) +
+  ggtitle("House Price distribution comparing with or without view")
+
+# House Price distribution comparing with or without "basement"
+houses$has_basement = ifelse(houses$sqft_basement > 0, 1, 0)
+houses$has_basement = factor(houses$has_basement)
+ggpairs(select(houses, log_price, has_basement), mapping = aes(color = has_basement, alpha = 0.5)) +
+  ggtitle("House Price distribution comparing with or without basement")
+
+# House Price distribution comparing with or without "renovation"
+houses$has_renovation = ifelse(houses$yr_renovated > 0, 1, 0)
+houses$has_renovation = factor(houses$has_renovation)
+ggpairs(select(houses, log_price, has_renovation), mapping = aes(color = has_renovation, alpha = 0.5)) +
+  ggtitle("House Price distribution comparing with or without renovation")
+```
+
+# House distribution of "sqft_lot" and "bedrooms" vs. price
+```{r, message=FALSE,warning=FALSE}
+# plot sqft_lot vs. price
+ggplot(houses, aes(x = sqft_lot, y = log_price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Distribution of sqft_lot vs. Log_Price")
+
+# plot bedrooms vs. price
+ggplot(houses, aes(x = bedrooms, y = log_price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Distribution of Bedrooms vs. Log_Price")
+```
+
+## We’re curious how much is the Price per sq. ft of the living space, of the lot, and of the surrounding living spaces and lots. 
+## Something happened in the King County Real Estate in Jan-Feb 2015. 
+```{r, message=FALSE,warning=FALSE}
+# collapses sales in one month to the first day of the month
+houses$date <- paste(substr(houses$date, 1,6), "01", sep = "")
+houses$date <- ymd(houses$date)
+
+# calculates the price of square ft for each sqft related features
+houses$price_sqft_living   = houses$price/houses$sqft_living
+houses$price_sqft_lot      = houses$price/houses$sqft_lot
+houses$price_sqft_lot15    = houses$price/houses$sqft_lot15
+houses$price_sqft_living15 = houses$price/houses$sqft_living15
+
+# computes the average price of sq ft 
+houses <- houses %>% 
+            mutate(price_sqft_avg = 
+                (price_sqft_living + price_sqft_lot + price_sqft_lot15 + price_sqft_living15)/4)
+
+# create data.frame "price_sqft_avg" by summarizing mean_price group by date
+price_sqft_avg <- houses %>% 
+                    group_by(date) %>% 
+                    summarise(mean_price = median(price_sqft_avg)) %>% 
+                    as.data.frame()
+
+# Plot Average Price of Sq ft over Time
+price_sqft_avg %>% ggplot(aes(x = date, y = mean_price)) +
+                      geom_line(linetype = 2) +
+                      geom_point(size = 2) +
+                      ggtitle("Average Price of Sq ft over Time")
+
+# Median price of houses for each Month over Time
+median_price_by_month <- houses %>% 
+                            group_by(date) %>% 
+                            summarise(median_price_month = median(price))
+
+# Plot Median Price over Time - Prices dip around Feb 2015.
+median_price_by_month %>% 
+  ggplot(aes(x = date, y = median_price_month)) +
+    geom_line(linetype = 2) +
+    geom_point(size = 2) +
+    ggtitle("Median Price per Month over Time")
+
+```
+
+# Visualization of houses location using Esri Map 
+```{r,warning=FALSE,message=FALSE}
+houses$PriceBin <- cut(houses$price, c(0, 250e3, 500e3, 750e3, 1e6, 2e6, 999e6))
+center_lon = median(houses$long, na.rm = TRUE)
+center_lat = median(houses$lat, na.rm = TRUE)
+
+factpal <- colorFactor(c("black", "blue", "yellow", "orange", "#0B5345", "red"), 
+                       houses$PriceBin)
+
+leaflet(houses) %>% addProviderTiles("Esri.NatGeoWorldMap") %>%
+  addCircles(lng = ~long, lat = ~lat, 
+             color = ~factpal(PriceBin))  %>%
+  # controls
+  setView(lng = center_lon, lat = center_lat, zoom = 12) %>%
+  addLegend("bottomright", pal = factpal, values = ~PriceBin,
+            title = "House Price Distribution",
+            opacity = 1)
+```
+
+# Remove bedrooms outlier 
+```{r}
+# Houses with number of bedrooms <1 or >9
+bedroom_outlier = houses %>% filter(houses$bedrooms < 1 | houses$bedrooms > 9 )
+nrow(bedroom_outlier)
+houses = houses %>% filter(between(bedrooms, 1, 9))
+```
+
+## Train/Test Dataset
+```{r}
+#Removing unnecessary features
+houses_data = houses %>% select(-date, -price_per_sqft_living, -has_view, -has_basement,
+                                -has_renovation, -price_sqft_living, -price_sqft_lot, -price_sqft_lot15,
+                                -price_sqft_living15, -price_sqft_avg, -PriceBin, -price)
+
+# split into train/test dataset
+# 80% of data to be used as training
+in_train = createDataPartition(y = houses_data$log_price, 
+                               p = 0.8, 
+                               list = FALSE)
+
+houses_train = houses_data[in_train, ]
+houses_train
+
+houses_test =  houses_data[-in_train, ]
+houses_test_example = test_house = data.frame(id = 0,
+                                              bedrooms= 3,
+                                              bathrooms= 1.75,
+                                              sqft_living = 1520,
+                                              sqft_lot = 6380,
+                                              floors= 1,
+                                              waterfront = factor(0),
+                                              view= 0,
+                                              condition= 3,
+                                              grade = 7,
+                                              sqft_above= 790,
+                                              sqft_basement= 730,
+                                              yr_built = 1948,
+                                              yr_renovated=0,
+                                              zipcode= 98115,
+                                              lat= 47.6950,
+                                              long= -122.304,
+                                              sqft_living15= 1520,
+                                              sqft_lot15= 6235,
+                                              log_price= NA)
+
+houses_test_example = bind_rows(houses_test,houses_test_example)
+
+# Imbalanced features in data
+nzv = nearZeroVar(houses_data, saveMetrics = TRUE)            
+nzv %>% filter(nzv == TRUE)
+
+# center/scale
+preprocessing_steps = preProcess(select(houses_train, sqft_living, sqft_lot, sqft_above, 
+                                        sqft_basement, sqft_living15, sqft_lot15), 
+                                 method = c("center", "scale", "nzv"))
+
+# apply pre-processing steps
+houses_train_proc = predict(preprocessing_steps, newdata = houses_train)
+houses_test_proc = predict(preprocessing_steps, newdata = houses_test)
+houses_test_example_proc = predict(preprocessing_steps, newdata = houses_test_example)
+```
+
+# Model_1
+```{r,warning=FALSE,message=FALSE}
+# build full linear regresseion model using "RMSE" metrics and cross-validation of 10-fold
+model_1 = train(log_price ~ ., 
+                   data = houses_train_proc, 
+                   method = 'lm', 
+                   metric = 'RMSE',
+                   tuneLength = 10,
+                   trControl = trainControl(method = 'cv', number = 10))
+
+# view model
+model_1
+
+# get summary report of the model_1
+summary(model_1)
+```
+
+# Feature importance of Model_1
+```{r,warning=FALSE,message=FALSE}
+# plot feature importance of model_1
+plot(varImp(model_1))
+```
+
+# Model_1 Prediction Metrics
+```{r,warning=FALSE,message=FALSE}
+# predict function using test data
+pred_1 = predict(model_1, newdata = houses_test_proc)
+
+# predicted target values
+head(pred_1)
+
+# calculate metrics by comparing prediction vs observation
+postResample(pred = pred_1, obs = houses_test_proc$log_price)
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+# explicitly calculate the errors for each row
+errors_1 = data.frame(predicted = pred_1,
+                    observed = houses_test_proc$log_price,
+                    error = pred_1 - houses_test_proc$log_price)
+
+# plot the correlation between prediction and observation
+ggplot(data = errors_1, aes(x = predicted, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  ggtitle("Model 1: Correlation between prediction and observation")
+```
+
+## Model_2
+```{r,warning=FALSE,message=FALSE}
+# build linear regresseion model using "RMSE" metrics and cross-validation of 10-fold 
+model_2 = train(log_price ~ sqft_living + lat + grade + yr_built + view,
+                   data = houses_train_proc,
+                   method = 'lm', 
+                   metric = 'RMSE',
+                   tuneLength = 10,
+                   trControl = trainControl(method = 'cv', number = 10))
+# view model
+model_2
+
+# get summary report of the model
+summary(model_2)
+```
+
+# Feature importance of model_2
+```{r,warning=FALSE,message=FALSE}
+# plot feature importance of model_2
+plot(varImp(model_2))
+```
+
+
+# Model_2 Prediction Metrics
+```{r,warning=FALSE,message=FALSE}
+# predict function using test data
+pred_2 = predict(model_2, newdata = houses_test_proc)
+
+# predicted target values
+head(pred_2)
+
+# calculate metrics by comparing prediction vs observation
+postResample(pred = pred_2, obs = houses_test_proc$log_price)
+```
+
+```{r,warning=FALSE,message=FALSE}
+# explicitly calculate the errors for each row
+errors_2 = data.frame(predicted = pred_2,
+                    observed = houses_test_proc$log_price,
+                    error = pred_2 - houses_test_proc$log_price)
+
+# plot the correlation between prediction and observation
+ggplot(data = errors_2, aes(x = predicted, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  ggtitle("Model 2: Correlation between prediction and observation")
+```
+
+# Model_3: Lasso Model
+```{r,warning=FALSE,message=FALSE}
+# build lasso model with cross-validation of 10-fold
+model_3 = train(log_price ~ sqft_living + lat + grade + yr_built + view, 
+                   data = houses_train_proc, 
+                   method = 'lasso',
+                   tuneLength = 10,
+                   trControl = trainControl(method = 'cv', number = 10))
+
+# view model
+model_3
+
+# get summary report of the model
+summary(model_3)
+```
+
+# Feature importance of Lasso Model
+```{r,warning=FALSE,message=FALSE}
+# plot feature importance of lasso model
+plot(varImp(model_3))
+```
+
+# Lasso Model Prediction Metrics
+```{r,warning=FALSE,message=FALSE}
+# predict function using test data
+pred_3 = predict(model_3, newdata = houses_test_proc)
+
+# predicted target values
+head(pred_3)
+
+# calculate metrics by comparing prediction vs observation
+postResample(pred = pred_3, obs = houses_test_proc$log_price)
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+# explicitly calculate the errors for each row
+errors_3 = data.frame(predicted = pred_3,
+                    observed = houses_test_proc$log_price,
+                    error = pred_3 - houses_test_proc$log_price)
+
+# plot the correlation between prediction and observation
+ggplot(data = errors_3, aes(x = predicted, y = observed)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  ggtitle("Model 3: correlation between prediction and observation")
+```
+
+# Model Comparison
+```{r,warning=FALSE,message=FALSE}
+# compare the models using "resamples"
+results = resamples(list(full_model = model_1, 
+                         model_2 = model_2,
+                         lasso_model = model_3))
+
+# get summary of the results
+summary(results)
+```
+
+# Plot the metrics
+```{r,warning=FALSE,message=FALSE}
+# plot the comparison metrics between the models
+dotplot(results)
+bwplot(results)
+```
+
+
+# Criteria of the house we are trying to buy or sell
+```{r,warning=FALSE,message=FALSE}
+example = houses_test_example_proc %>% filter(id == 0)
+```
+
+# Predict price on the criteria of our test house
+```{r,warning=FALSE,message=FALSE}
+predict(model_1, example)
+```
+
+# Convert log price to actual price
+```{r,warning=FALSE,message=FALSE}
+test_house_price = 10^ 5.634006       #replace this log_price with the current value from predict model result in line 453
+test_house_price 
+```
